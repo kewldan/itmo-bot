@@ -234,12 +234,21 @@ class Database:
 
     # ── пользователи и подписки ──────────────────────────────────────────
 
-    async def ensure_user(self, tg_id: int) -> None:
-        """Регистрирует пользователя, если его ещё нет."""
-        await self.pool.execute(
-            "INSERT INTO users (tg_id) VALUES ($1) ON CONFLICT DO NOTHING",
+    async def ensure_user(self, tg_id: int) -> bool:
+        """Регистрирует пользователя; True — если он новый."""
+        record = await self.pool.fetchrow(
+            """
+            INSERT INTO users (tg_id) VALUES ($1)
+            ON CONFLICT DO NOTHING
+            RETURNING tg_id
+            """,
             tg_id,
         )
+        return record is not None
+
+    async def count_users(self) -> int:
+        """Число зарегистрированных пользователей."""
+        return int(await self.pool.fetchval("SELECT count(*) FROM users"))
 
     async def add_subscription(
         self, tg_id: int, program_id: int, sspvo_id: str

@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from http import HTTPStatus
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 import httpx
 
@@ -67,8 +67,21 @@ class NoNextDataError(FetchError):
         super().__init__("На странице нет данных — вероятно, сайт изменился.")
 
 
+class EmptyRatingError(FetchError):
+    """В списке нет ни одной известной категории с абитуриентами."""
+
+    def __init__(self) -> None:
+        """Сообщение фиксировано."""
+        super().__init__("Список пуст или структура страницы неизвестна.")
+
+
 class CompactItem(TypedDict):
-    """Компактная запись абитуриента в снапшоте."""
+    """Компактная запись абитуриента в снапшоте.
+
+    q — квотная категория (особая/отдельная/целевая): такие абитуриенты
+    занимают квотные места и не считаются конкурентами общего конкурса.
+    В старых снапшотах ключ отсутствует — читать через .get().
+    """
 
     id: str
     pos: int | None
@@ -80,6 +93,7 @@ class CompactItem(TypedDict):
     agr: bool
     app: bool
     paid: bool
+    q: NotRequired[bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +149,7 @@ def _to_int(value: object) -> int | None:
     return int(value) if isinstance(value, int) else None
 
 
-def _compact(item: dict[str, object]) -> CompactItem:
+def _compact(item: dict[str, object], *, quota: bool = False) -> CompactItem:
     return CompactItem(
         id=str(item.get("sspvo_id") or ""),
         pos=_to_int(item.get("position")),
@@ -147,6 +161,7 @@ def _compact(item: dict[str, object]) -> CompactItem:
         agr=bool(item.get("is_send_agreement")),
         app=bool(item.get("has_approved_contract")),
         paid=bool(item.get("has_paid_contract")),
+        q=quota,
     )
 
 
@@ -168,6 +183,29 @@ def _places_for(direction: dict[str, object], financing: str) -> int:
     return _to_int(direction.get(financing)) or 0
 
 
+# Бюджетные списки разбиты на категории (нумерация мест — сквозная).
+# БВИ занимают места основного конкурса; квотные категории — свои места.
+_MAIN_CATEGORIES = ("without_entry_tests", "general_competition")
+_QUOTA_CATEGORIES = ("by_unusual_quota", "by_special_quota", "by_target_quota")
+
+
+def _category_items(program_list: dict[str, object]) -> list[CompactItem]:
+    items: list[CompactItem] = []
+    for key in _MAIN_CATEGORIES:
+        part = program_list.get(key)
+        if isinstance(part, list):
+            raw = cast("list[dict[str, object]]", part)
+            items += [_compact(i) for i in raw]
+    for key in _QUOTA_CATEGORIES:
+        part = program_list.get(key)
+        if isinstance(part, list):
+            raw = cast("list[dict[str, object]]", part)
+            items += [_compact(i, quota=True) for i in raw]
+    if not items:
+        raise EmptyRatingError
+    return items
+
+
 def _parse_page(html: str) -> tuple[dict[str, object], list[CompactItem], datetime]:
     match = _NEXT_DATA_RE.search(html)
     if match is None:
@@ -176,8 +214,12 @@ def _parse_page(html: str) -> tuple[dict[str, object], list[CompactItem], dateti
         data = json.loads(match.group(1))
         program_list = data["props"]["pageProps"]["programList"]
         direction = cast("dict[str, object]", program_list["direction"])
-        raw_items = cast("list[dict[str, object]]", program_list["items"])
-        items = [_compact(i) for i in raw_items]
+        raw = program_list.get("items")
+        if isinstance(raw, list):
+            raw_items = cast("list[dict[str, object]]", raw)
+            items = [_compact(i) for i in raw_items]
+        else:
+            items = _category_items(cast("dict[str, object]", program_list))
         items.sort(key=lambda i: (i["pos"] is None, i["pos"] or 0))
         update_time = datetime.fromisoformat(str(program_list["update_time"]))
     except (KeyError, TypeError, ValueError) as exc:

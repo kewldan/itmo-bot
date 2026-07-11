@@ -452,19 +452,19 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiogram", specifier = ">=3.15" },
-    { name = "asyncpg", specifier = ">=0.30" },
+    { name = "aiogram", specifier = ">=3.29" },
+    { name = "asyncpg", specifier = ">=0.31" },
     { name = "httpx", specifier = ">=0.28" },
-    { name = "matplotlib", specifier = ">=3.10" },
-    { name = "pydantic-settings", specifier = ">=2.7" },
-    { name = "redis", specifier = ">=5.2" },
+    { name = "matplotlib", specifier = ">=3.11" },
+    { name = "pydantic-settings", specifier = ">=2.14" },
+    { name = "redis", specifier = ">=8.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "asyncpg-stubs", specifier = ">=0.30" },
-    { name = "ruff", specifier = ">=0.9" },
-    { name = "ty" },
+    { name = "asyncpg-stubs", specifier = ">=0.31" },
+    { name = "ruff", specifier = ">=0.15" },
+    { name = "ty", specifier = ">=0.0.58" },
 ]
 
 [[package]]

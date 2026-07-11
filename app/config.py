@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     bot_token: str = ""
     database_url: str = "postgresql://itmo:itmo@localhost:5432/itmo"
     redis_url: str | None = None
+    # Telegram ID администратора — уведомления о новых пользователях.
+    admin_tg_id: int | None = None
     poll_interval_seconds: int = 600
     # Дата окончания приёма оплат по договорам — горизонт прогноза.
     enroll_deadline: date = date(2026, 8, 20)

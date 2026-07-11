@@ -479,7 +479,9 @@ def analyze(
         update_time=update_time,
         approximate=params.approximate,
     )
-    me = next((i for i in items if sspvo_id and i["id"] == str(sspvo_id)), None)
+    # Абитуриент может быть и в квоте, и в общем конкурсе — берём общий.
+    mine = [i for i in items if sspvo_id and i["id"] == str(sspvo_id)]
+    me = next((i for i in mine if not i.get("q")), mine[0] if mine else None)
     if me is None:
         return a
 
@@ -490,14 +492,22 @@ def analyze(
     a.days_apply = min(
         max((apply_end - update_time).total_seconds() / 86400.0, 0.0), a.days_left
     )
-    a.calib = calibrate(history, finish, params)
+    # Калибровка меряет конверсию в оплату договора — для бюджета её нет.
+    a.calib = (
+        Calibration() if params.approximate else calibrate(history, finish, params)
+    )
     a.influx = estimate_influx(history, me["ts"])
 
+    # Квотные категории (q) занимают свои места, вычтенные из places, —
+    # конкурентами общего конкурса не считаются.
     my_pos = me["pos"]
     ahead_items = [
         i
         for i in items
-        if i["pos"] is not None and my_pos is not None and i["pos"] < my_pos
+        if i["pos"] is not None
+        and my_pos is not None
+        and i["pos"] < my_pos
+        and not i.get("q")
     ]
     a.ahead = _breakdown(ahead_items)
     _fill_probabilities(a, ahead_items, params)
@@ -527,7 +537,8 @@ class Delta:
 def _position_of(items: list[CompactItem], sspvo_id: str | None) -> int | None:
     if not sspvo_id:
         return None
-    me = next((i for i in items if i["id"] == str(sspvo_id)), None)
+    mine = [i for i in items if i["id"] == str(sspvo_id)]
+    me = next((i for i in mine if not i.get("q")), mine[0] if mine else None)
     return me["pos"] if me else None
 
 

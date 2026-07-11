@@ -1,10 +1,12 @@
-"""Команды: /start /help /status /chart /list /refresh и колбэки /list."""
+"""Команды: /start /help /status /chart /list /settings /refresh и колбэки."""
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     BufferedInputFile,
@@ -16,12 +18,15 @@ from aiogram.types import (
 
 from app import texts
 from app.charts import render_history
+from app.config import settings
 from app.fetcher import FetchError, fetch_rating
 from app.service import build_analysis, build_history_points, day_delta
 
 if TYPE_CHECKING:
     from app.db import Database
     from app.models import Program, Subscription
+
+log = logging.getLogger(__name__)
 
 router = Router()
 
@@ -33,10 +38,31 @@ def _interval_label(hours: int) -> str:
     return "Выкл" if hours == 0 else f"{hours} ч"
 
 
+async def _notify_admin_new_user(message: Message, db: Database) -> None:
+    """Сообщает администратору о новом пользователе (если настроено)."""
+    if settings.admin_tg_id is None or message.bot is None:
+        return
+    user = message.from_user
+    name = user.full_name if user else "?"
+    username = f", @{user.username}" if user and user.username else ""
+    text = texts.ADMIN_NEW_USER.format(
+        name=name,
+        tg_id=message.chat.id,
+        username=username,
+        total=await db.count_users(),
+    )
+    try:
+        await message.bot.send_message(settings.admin_tg_id, text)
+    except TelegramAPIError:
+        log.warning("Не удалось уведомить админа %s", settings.admin_tg_id)
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, db: Database) -> None:
     """Приветствие и регистрация пользователя."""
-    await db.ensure_user(message.chat.id)
+    created = await db.ensure_user(message.chat.id)
+    if created:
+        await _notify_admin_new_user(message, db)
     await message.answer(texts.START, disable_web_page_preview=True)
 
 
@@ -44,6 +70,12 @@ async def cmd_start(message: Message, db: Database) -> None:
 async def cmd_help(message: Message) -> None:
     """Справка."""
     await message.answer(texts.HELP, disable_web_page_preview=True)
+
+
+@router.message(Command("id"))
+async def cmd_id(message: Message) -> None:
+    """Показывает Telegram ID (для настройки ADMIN_TG_ID)."""
+    await message.answer(texts.YOUR_ID.format(tg_id=message.chat.id))
 
 
 @router.message(Command("status"))

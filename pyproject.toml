@@ -5,19 +5,19 @@ description = "Telegram-бот мониторинга конкурсных сп�
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "aiogram>=3.15",
-    "asyncpg>=0.30",
+    "aiogram>=3.29",
+    "asyncpg>=0.31",
     "httpx>=0.28",
-    "matplotlib>=3.10",
-    "pydantic-settings>=2.7",
-    "redis>=5.2",
+    "matplotlib>=3.11",
+    "pydantic-settings>=2.14",
+    "redis>=8.0",
 ]
 
 [dependency-groups]
 dev = [
-    "asyncpg-stubs>=0.30",
-    "ruff>=0.9",
-    "ty",
+    "asyncpg-stubs>=0.31",
+    "ruff>=0.15",
+    "ty>=0.0.58",
 ]
 
 [tool.ruff]

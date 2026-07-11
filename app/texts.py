@@ -100,7 +100,8 @@ def _status_personal(a: Analysis) -> list[str]:
     if a.exam_score is not None:
         score_detail = f" ({a.exam_score:g} + ИД {a.ia_score or 0:g})"
     b = a.ahead
-    ahead_total = (a.position or 1) - 1
+    ahead_total = b.paid + b.approved + b.agreement + b.none
+    quota_note = " (квоты не в счёт)" if a.approximate else ""
     return [
         "",
         f"<b>Ваше место: {a.position} из {a.total}</b>",
@@ -108,7 +109,7 @@ def _status_personal(a: Analysis) -> list[str]:
         f"выше {pct(a.percentile or 0)} списка",
         f"Приоритет: {a.priority} · {_STATE_RU[a.my_state]}",
         "",
-        f"<b>Выше вас: {ahead_total} чел.</b>",
+        f"<b>Выше вас: {ahead_total} конкурент(ов){quota_note}</b>",
         f" ├ оплатили договор: {b.paid}",
         f" ├ договор одобрен: {b.approved}",
         f" ├ подали согласие: {b.agreement}",
@@ -290,6 +291,11 @@ TRACK_DONE = (
     "посмотреть /status и /chart."
 )
 TRACK_SAVED_NOT_FOUND = "Пока вас нет в списке — проверю при каждом обновлении."
+ADMIN_NEW_USER = (
+    "👤 Новый пользователь: {name} (id <code>{tg_id}</code>{username})\n"
+    "Всего пользователей: {total}"
+)
+YOUR_ID = "Ваш Telegram ID: <code>{tg_id}</code>"
 CANCELLED = "Отменено."
 NO_SUBS = "У вас пока нет подписок. Начните с /track."
 NO_DATA = "По «{title}» пока нет данных — попробуйте /refresh."
