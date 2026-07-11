@@ -2,29 +2,31 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from app.charts import HistoryPoint
 from app.config import settings
+from app.cross import CROSS_FRESH_HOURS, effective_priorities
 from app.metrics import (
     MIN_HISTORY,
     Analysis,
+    AnalysisContext,
     Delta,
     Horizon,
+    LkPoints,
     analyze,
     diff_snapshots,
 )
 
 if TYPE_CHECKING:
+    from app.db import Database
     from app.metrics import HistoryEntry
     from app.models import Program, Snapshot
 
 MAX_CHART_POINTS = 60
 DAY_AGO_HOURS = 20  # «сутки назад» с допуском на редкие обновления списка
-
-
-def _horizon() -> Horizon:
-    return Horizon(enroll=settings.enroll_deadline, apply=settings.apply_deadline)
+LK_FRESH_HOURS = 48.0  # сколько часов выгрузке ЛК доверяем как «свежей»
 
 
 def history_tuples(snaps: list[Snapshot]) -> list[HistoryEntry]:
@@ -32,16 +34,78 @@ def history_tuples(snaps: list[Snapshot]) -> list[HistoryEntry]:
     return [(s.update_time, s.items) for s in snaps]
 
 
+def _horizon() -> Horizon:
+    return Horizon(enroll=settings.enroll_deadline, apply=settings.apply_deadline)
+
+
+async def fetch_cross(
+    db: Database, program: Program, now: datetime
+) -> dict[str, int] | None:
+    """Эффективные приоритеты конкурентов, если кросс-данные свежие."""
+    if not settings.cross_enabled:
+        return None
+    rows = await db.cross_lists(program.degree)
+    fresh = [
+        r
+        for r in rows
+        if (now - r.fetched_at).total_seconds() < CROSS_FRESH_HOURS * 3600
+    ]
+    if not fresh:
+        return None
+    result = effective_priorities(
+        (program.degree, program.financing, program.group_id), fresh
+    )
+    return result or None
+
+
+async def fetch_lk(db: Database, program_id: int, now: datetime) -> LkPoints | None:
+    """Свежие точки притока из выгрузки ЛК, если есть."""
+    row = await db.lk_points(program_id)
+    if row is None:
+        return None
+    uploaded_at, raw = row
+    if (now - uploaded_at).total_seconds() > LK_FRESH_HOURS * 3600:
+        return None
+    points: list[tuple[datetime, float | None]] = []
+    for entry in raw:
+        stamp, score = entry[0], entry[1]
+        if isinstance(stamp, str):
+            points.append(
+                (
+                    datetime.fromisoformat(stamp),
+                    float(score) if isinstance(score, (int, float)) else None,
+                )
+            )
+    return LkPoints(uploaded_at=uploaded_at, points=points)
+
+
+def build_context(
+    program: Program,
+    lk: LkPoints | None = None,
+    cross: dict[str, int] | None = None,
+) -> AnalysisContext:
+    """Контекст анализа для программы."""
+    return AnalysisContext(
+        places=program.places,
+        horizon=_horizon(),
+        financing=program.financing,
+        lk=lk,
+        cross=cross,
+    )
+
+
 def build_analysis(
-    snaps: list[Snapshot], program: Program, sspvo_id: str | None
+    snaps: list[Snapshot],
+    program: Program,
+    sspvo_id: str | None,
+    lk: LkPoints | None = None,
+    cross: dict[str, int] | None = None,
 ) -> Analysis:
     """Анализ последнего снапшота с учётом всей истории."""
     return analyze(
         history=history_tuples(snaps),
         sspvo_id=sspvo_id,
-        places=program.places,
-        horizon=_horizon(),
-        financing=program.financing,
+        ctx=build_context(program, lk, cross),
     )
 
 
@@ -79,7 +143,10 @@ def _downsample(snaps: list[Snapshot]) -> list[Snapshot]:
 
 
 def build_history_points(
-    snaps: list[Snapshot], program: Program, sspvo_id: str | None
+    snaps: list[Snapshot],
+    program: Program,
+    sspvo_id: str | None,
+    lk: LkPoints | None = None,
 ) -> list[HistoryPoint]:
     """Точки для графиков.
 
@@ -88,15 +155,10 @@ def build_history_points(
     """
     snaps = _downsample(snaps)
     entries = history_tuples(snaps)
+    ctx = build_context(program, lk)
     points: list[HistoryPoint] = []
     for idx, snap in enumerate(snaps):
-        a = analyze(
-            history=entries[: idx + 1],
-            sspvo_id=sspvo_id,
-            places=program.places,
-            horizon=_horizon(),
-            financing=program.financing,
-        )
+        a = analyze(history=entries[: idx + 1], sspvo_id=sspvo_id, ctx=ctx)
         points.append(
             HistoryPoint(
                 t=snap.update_time,

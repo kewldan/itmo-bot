@@ -16,9 +16,13 @@ dependencies = [
 [dependency-groups]
 dev = [
     "asyncpg-stubs>=0.31",
+    "pytest>=8.3",
     "ruff>=0.15",
     "ty>=0.0.58",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py313"
@@ -41,6 +45,11 @@ allowed-confusables = [
     "Ы", "Ь", "Э", "Ю", "Я",
     "–", "×",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Только стандартные pytest-идиомы и доступ к приватным функциям
+# в тестах; на app/ никакие исключения не распространяются.
+"tests/**" = ["S101", "PLR2004", "SLF001"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"

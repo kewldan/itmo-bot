@@ -26,9 +26,12 @@ HELP = (
     "/track — начать следить за списком (ссылка + ваш код ЕПГУ)\n"
     "/status — детальный разбор: место, конкуренты, вероятность, прогноз\n"
     "/chart — графики динамики\n"
+    "/compare — сравнить все ваши программы\n"
     "/list — мои подписки (вкл/выкл уведомления, удалить)\n"
     "/settings — дайджест места: как часто присылать (по умолчанию раз в 6 ч)\n"
     "/refresh — принудительно обновить данные с сайта\n\n"
+    "💡 Пришлите CSV-выгрузку из личного кабинета — учту реальные времена "
+    "подачи заявлений в прогнозе притока.\n\n"
     "<i>Код ЕПГУ — «Уникальный код портала Госуслуг», по нему вы значитесь "
     "в конкурсном списке.</i>"
 )
@@ -134,9 +137,21 @@ def _status_probability(a: Analysis) -> list[str]:
         f" прогноз к {deadline}:  {_prob_bar(a.p_base)} <b>{pct(a.p_base)}</b>",
         f" пессимистично: {pct(a.p_pess)} · оптимистично: {pct(a.p_opt)}",
     ]
+    if a.safe_all:
+        lines.append(" безопасная граница: P≥95% у всего текущего списка")
+    elif a.safe_position is not None:
+        score_part = f", балл ~{a.safe_score:g}" if a.safe_score else ""
+        lines.append(
+            f" безопасная граница (P≥95%): место ~{a.safe_position}{score_part}"
+        )
     if not (a.calib.enough_data or a.influx.enough_data):
         lines.append(
             "<i>Пока по приорам: динамика уточнится после ~12 ч наблюдений.</i>"
+        )
+    if a.cross_used:
+        lines.append(
+            f"<i>🔗 Кросс-анализ программ ИТМО: приоритеты {a.cross_changed} "
+            "конкурентов выше уточнены по другим спискам.</i>"
         )
     if a.approximate:
         lines.append(
@@ -151,9 +166,10 @@ def _status_dynamics(a: Analysis, day: Delta | None) -> list[str]:
     if a.influx.enough_data:
         apply_end = settings.apply_deadline.strftime("%d.%m")
         enroll_end = settings.enroll_deadline.strftime("%d.%m")
+        source = " (по выгрузке ЛК)" if a.influx_is_lk else ""
         lines += [
             "",
-            "<b>Динамика</b>",
+            f"<b>Динамика</b>{source}",
             f" приток: ~{a.influx.rate_per_day:.0f} заявл./день, "
             f"из них выше вас ~{a.influx.q_ahead * 100:.0f}%",
             f" оплаты: ~{a.influx.paid_rate_per_day:.1f}/день",
@@ -165,10 +181,15 @@ def _status_dynamics(a: Analysis, day: Delta | None) -> list[str]:
         pos_part = ""
         if day.d_position is not None:
             pos_part = f", ваше место {_signed(day.d_position, invert_good=True)}"
+        gone_part = ""
+        if day.withdrawn:
+            gone_part = f", снялись {day.withdrawn}"
+            if day.withdrawn_ahead:
+                gone_part += f" (выше вас: {day.withdrawn_ahead})"
         lines += [
             "",
             f"За последние ~{day.hours:.0f} ч: заявлений {_signed(day.d_total)}, "
-            f"оплат {_signed(day.d_paid)}{pos_part}",
+            f"оплат {_signed(day.d_paid)}{pos_part}{gone_part}",
         ]
     lines += ["", f"До дедлайна оплаты: {a.days_left:.0f} дн."]
     return lines
@@ -203,6 +224,11 @@ def format_notification(
         f"Оплачено договоров: {a.paid} ({_signed(d.d_paid)}), "
         f"одобрено: {a.approved} ({_signed(d.d_approved)})",
     ]
+    if d.withdrawn:
+        gone = f"Снялись со списка: {d.withdrawn}"
+        if d.withdrawn_ahead:
+            gone += f" (выше вас: {d.withdrawn_ahead})"
+        lines.append(gone)
     if a.found:
         pos_str = f"Ваше место: <b>{a.position}</b>"
         if d.d_position:
@@ -291,6 +317,61 @@ TRACK_DONE = (
     "посмотреть /status и /chart."
 )
 TRACK_SAVED_NOT_FOUND = "Пока вас нет в списке — проверю при каждом обновлении."
+
+
+def format_threshold_alert(title: str, threshold: float, a: Analysis) -> str:
+    """Алерт: вероятность опустилась ниже порога."""
+    return (
+        f"⚠️ <b>{title}</b>\n"
+        f"Вероятность поступления опустилась ниже {threshold * 100:.0f}%: "
+        f"сейчас <b>{pct(a.p_base)}</b> "
+        f"(место {a.position}, эффективная позиция ~{a.eff_position:.0f} "
+        f"из {a.places}).\n\nПодробнее: /status"
+    )
+
+
+def format_compare(rows: list[tuple[str, Analysis]]) -> str:
+    """Сводная таблица по всем подпискам для /compare."""
+    lines = ["📋 <b>Сравнение ваших программ</b>", ""]
+    for title, a in rows:
+        lines.append(f"<b>{title}</b>")
+        if not a.found:
+            lines += ["  код не найден в списке", ""]
+            continue
+        place = f"  место {a.position}/{a.total} · мест {a.places}"
+        if a.my_state == "paid":
+            place += " · 🎉 поступили"
+        lines += [
+            place,
+            f"  эффективная позиция ~{a.eff_position:.0f} · "
+            f"P сейчас {pct(a.p_now)} · к дедлайну {pct(a.p_base)}",
+            "",
+        ]
+    lines.append("Подробности по каждой: /status")
+    return "\n".join(lines)
+
+
+LK_NOT_CSV = (
+    "Я принимаю CSV-выгрузки из личного кабинета абитуриента "
+    "(файл со списком заявок и временем подачи)."
+)
+LK_TOO_BIG = "Файл слишком большой (лимит 10 МБ)."
+LK_BAD_FORMAT = (
+    "Не смог разобрать файл. Нужна CSV-выгрузка из ЛК с колонками "
+    "«Код поступающего» и «Дата выбора конкурсной группы по Москве»."
+)
+LK_NO_MATCH = (
+    "Разобрал {rows} строк, но не нашёл в файле код ЕПГУ ни одной из ваших "
+    "подписок — не понимаю, к какой программе привязать. Сначала /track."
+)
+LK_ACCEPTED = (
+    "✅ Принял {rows} заявок с временем подачи для «{title}».\n"
+    "Реальный приток за последние 4 дня: ~{rate:.0f} заявл./день, "
+    "из них выше вас ~{q_ahead:.0f}%.\n"
+    "Эти данные будут использоваться в расчётах ближайшие 48 часов — "
+    "смотрите /status."
+)
+
 ADMIN_NEW_USER = (
     "👤 Новый пользователь: {name} (id <code>{tg_id}</code>{username})\n"
     "Всего пользователей: {total}"

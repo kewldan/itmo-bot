@@ -20,6 +20,7 @@ import httpx
 from app.config import settings
 
 BASE_URL = "https://abit.itmo.ru/rating/{degree}/{financing}/{group_id}"
+DIRECTIONS_URL = "https://abitlk.itmo.ru/api/v1/rating/directions?degree={degree}"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) itmo-rating-bot/1.0"
 
 _NEXT_DATA_RE = re.compile(
@@ -225,6 +226,26 @@ def _parse_page(html: str) -> tuple[dict[str, object], list[CompactItem], dateti
     except (KeyError, TypeError, ValueError) as exc:
         raise RatingParseError(str(exc)) from exc
     return direction, items, update_time
+
+
+async def fetch_direction_ids(
+    degree: str, client: httpx.AsyncClient | None = None
+) -> list[int]:
+    """Все competitive_group_id степени — из публичного API списков."""
+    url = DIRECTIONS_URL.format(degree=degree)
+    if client is None:
+        async with httpx.AsyncClient(timeout=settings.http_timeout) as own_client:
+            response = await own_client.get(url, headers={"User-Agent": USER_AGENT})
+    else:
+        response = await client.get(url, headers={"User-Agent": USER_AGENT})
+    if response.status_code != HTTPStatus.OK:
+        raise RatingHttpError(url, response.status_code)
+    try:
+        items = cast("list[dict[str, object]]", response.json()["result"]["items"])
+        ids = [_to_int(i.get("competitive_group_id")) for i in items]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RatingParseError(str(exc)) from exc
+    return [i for i in ids if i is not None]
 
 
 async def fetch_rating(

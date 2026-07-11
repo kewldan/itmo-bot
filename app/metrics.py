@@ -112,6 +112,29 @@ class Horizon:
     apply: date
 
 
+@dataclass(frozen=True, slots=True)
+class LkPoints:
+    """Времена подачи заявлений из выгрузки личного кабинета.
+
+    points — (момент выбора конкурсной группы, сумма баллов или None).
+    Даёт настоящую кривую притока: публичный список времён не содержит.
+    """
+
+    uploaded_at: datetime
+    points: list[tuple[datetime, float | None]]
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisContext:
+    """Параметры анализа, не зависящие от истории снапшотов."""
+
+    places: int
+    horizon: Horizon
+    financing: str
+    lk: LkPoints | None = None  # приток из выгрузки ЛК (если свежая)
+    cross: dict[str, int] | None = None  # sspvo_id -> эффективный приоритет
+
+
 # Сценарии: множитель шансов конкурентов и множитель притока.
 SCENARIOS: dict[str, tuple[float, float]] = {
     "base": (1.0, 1.0),
@@ -130,8 +153,14 @@ def _state_key(item: CompactItem) -> StateKey:
     return "none"
 
 
-def prior_enroll(item: CompactItem, params: ModelParams) -> float:
-    """Приор вероятности занять место — по сигналам абитуриента."""
+def prior_enroll(
+    item: CompactItem, params: ModelParams, eff_prio: int | None = None
+) -> float:
+    """Приор вероятности занять место — по сигналам абитуриента.
+
+    eff_prio — эффективный приоритет из кросс-анализа: заменяет заявленный
+    для тех, кто ещё ничего не подписал.
+    """
     state = _state_key(item)
     if state == "paid":
         return params.p_paid
@@ -139,7 +168,7 @@ def prior_enroll(item: CompactItem, params: ModelParams) -> float:
         return params.p_approved
     if state == "agreement":
         return params.p_agreement
-    prio = item["prio"]
+    prio = eff_prio if eff_prio is not None else item["prio"]
     if prio is None:
         return params.p_no_priority
     return params.p_by_priority.get(prio, params.p_no_priority)
@@ -278,10 +307,13 @@ def calibrate(
 
 
 def calibrated_enroll(
-    item: CompactItem, calib: Calibration, params: ModelParams
+    item: CompactItem,
+    calib: Calibration,
+    params: ModelParams,
+    eff_prio: int | None = None,
 ) -> float:
-    """Вероятность занять место с учётом калибровки."""
-    p = prior_enroll(item, params)
+    """Вероятность занять место с учётом калибровки и кросс-анализа."""
+    p = prior_enroll(item, params, eff_prio)
     state = _state_key(item)
     if state == "paid":
         return p
@@ -311,6 +343,28 @@ def _q_ahead(
     above = sum(1 for s in scored if s > my_score)
     ties = sum(1 for s in scored if s == my_score)
     return (above + 0.5 * ties) / len(scored)
+
+
+def influx_from_lk(lk: LkPoints, my_score: float | None) -> Influx:
+    """Приток по временам подачи из выгрузки ЛК (без скорости оплат)."""
+    influx = Influx()
+    if not lk.points:
+        return influx
+    last_t = max(t for t, _ in lk.points)
+    recent = [(t, s) for t, s in lk.points if _hours(last_t, t) <= INFLUX_WINDOW_HOURS]
+    if not recent:
+        return influx
+    influx.enough_data = True
+    influx.rate_per_day = len(recent) / (INFLUX_WINDOW_HOURS / 24.0)
+    if my_score is not None:
+        scored = [s for _, s in recent if s is not None]
+        if len(scored) < NEWCOMER_SAMPLE_MIN:
+            scored = [s for _, s in lk.points if s is not None]
+        if scored:
+            above = sum(1 for s in scored if s > my_score)
+            ties = sum(1 for s in scored if s == my_score)
+            influx.q_ahead = (above + 0.5 * ties) / len(scored)
+    return influx
 
 
 def estimate_influx(history: list[HistoryEntry], my_score: float | None) -> Influx:
@@ -389,6 +443,13 @@ class Analysis:
     forecast_total: float = 0.0
     forecast_paid: float = 0.0
     my_state: StateKey = "none"
+    # «Безопасная граница»: последняя позиция списка с P >= SAFE_LEVEL.
+    safe_position: int | None = None
+    safe_score: float | None = None
+    safe_all: bool = False  # проходит весь текущий список
+    influx_is_lk: bool = False  # приток посчитан по выгрузке ЛК
+    cross_used: bool = False  # применён кросс-анализ программ
+    cross_changed: int = 0  # у скольких конкурентов выше приоритет уточнён
 
 
 def deadline_at(day: date) -> datetime:
@@ -434,12 +495,28 @@ def _fill_personal(a: Analysis, me: CompactItem, items: list[CompactItem]) -> No
         a.percentile = sum(1 for s in scored if s < my_ts) / len(scored)
 
 
+SAFE_LEVEL = 0.95
+
+
 def _fill_probabilities(
     a: Analysis,
     ahead_items: list[CompactItem],
     params: ModelParams,
+    cross: dict[str, int] | None,
 ) -> None:
-    ps_base = [calibrated_enroll(i, a.calib, params) for i in ahead_items]
+    ps_base = [
+        calibrated_enroll(i, a.calib, params, cross.get(i["id"]) if cross else None)
+        for i in ahead_items
+    ]
+    if cross:
+        a.cross_used = True
+        a.cross_changed = sum(
+            1
+            for i in ahead_items
+            if _state_key(i) == "none"
+            and (eff := cross.get(i["id"])) is not None
+            and eff != i["prio"]
+        )
     a.mu_ahead_now = sum(ps_base)
     a.eff_position = a.mu_ahead_now + 1.0
 
@@ -458,21 +535,56 @@ def _fill_probabilities(
         setattr(a, f"p_{name}", value)
 
 
+def _fill_safe_boundary(
+    a: Analysis,
+    non_quota: list[CompactItem],
+    params: ModelParams,
+    cross: dict[str, int] | None,
+) -> None:
+    """Последняя позиция, с которой P(поступление) >= SAFE_LEVEL.
+
+    Бинарный поиск по числу конкурентов выше; приток берётся ваш —
+    это ориентир, а не точная граница.
+    """
+    if a.places <= 0 or not non_quota:
+        return
+    ps_all = [
+        calibrated_enroll(i, a.calib, params, cross.get(i["id"]) if cross else None)
+        for i in non_quota
+    ]
+
+    def prob(k: int) -> float:
+        return _prob_admission(ps_all[:k], a.places, a.mu_new_ahead)
+
+    n = len(ps_all)
+    if prob(n) >= SAFE_LEVEL:
+        a.safe_all = True
+        return
+    lo, hi = 0, n  # prob(lo) >= уровень, prob(hi) < уровень
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if prob(mid) >= SAFE_LEVEL:
+            lo = mid
+        else:
+            hi = mid
+    boundary = non_quota[min(lo, n - 1)]
+    a.safe_position = boundary["pos"]
+    a.safe_score = boundary["ts"]
+
+
 def analyze(
     history: list[HistoryEntry],
     sspvo_id: str | None,
-    places: int,
-    horizon: Horizon,
-    financing: str,
+    ctx: AnalysisContext,
 ) -> Analysis:
     """Полный анализ по истории снапшотов (последний — текущее состояние)."""
     update_time, items = history[-1]
-    params = params_for(financing)
+    params = params_for(ctx.financing)
     paid, approved, agreements = _totals(items)
     a = Analysis(
         found=False,
         total=len(items),
-        places=places,
+        places=ctx.places,
         paid=paid,
         approved=approved,
         agreements=agreements,
@@ -486,8 +598,8 @@ def analyze(
         return a
 
     _fill_personal(a, me, items)
-    finish = deadline_at(horizon.enroll)
-    apply_end = deadline_at(horizon.apply)
+    finish = deadline_at(ctx.horizon.enroll)
+    apply_end = deadline_at(ctx.horizon.apply)
     a.days_left = max((finish - update_time).total_seconds() / 86400.0, 0.0)
     a.days_apply = min(
         max((apply_end - update_time).total_seconds() / 86400.0, 0.0), a.days_left
@@ -497,20 +609,24 @@ def analyze(
         Calibration() if params.approximate else calibrate(history, finish, params)
     )
     a.influx = estimate_influx(history, me["ts"])
+    if ctx.lk is not None:
+        lk_influx = influx_from_lk(ctx.lk, me["ts"])
+        if lk_influx.enough_data:
+            # у выгрузки ЛК нет данных об оплатах — берём их из истории
+            lk_influx.paid_rate_per_day = a.influx.paid_rate_per_day
+            a.influx = lk_influx
+            a.influx_is_lk = True
 
     # Квотные категории (q) занимают свои места, вычтенные из places, —
     # конкурентами общего конкурса не считаются.
     my_pos = me["pos"]
+    non_quota = [i for i in items if i["pos"] is not None and not i.get("q")]
     ahead_items = [
-        i
-        for i in items
-        if i["pos"] is not None
-        and my_pos is not None
-        and i["pos"] < my_pos
-        and not i.get("q")
+        i for i in non_quota if my_pos is not None and (i["pos"] or 0) < my_pos
     ]
     a.ahead = _breakdown(ahead_items)
-    _fill_probabilities(a, ahead_items, params)
+    _fill_probabilities(a, ahead_items, params, ctx.cross)
+    _fill_safe_boundary(a, non_quota, params, ctx.cross)
 
     a.forecast_total = a.total + a.influx.rate_per_day * a.days_apply
     a.forecast_paid = min(
@@ -532,6 +648,8 @@ class Delta:
     d_approved: int
     d_agreements: int
     d_position: int | None  # отрицательное = поднялись вверх
+    withdrawn: int = 0  # исчезли из списка (забрали документы)
+    withdrawn_ahead: int | None = None  # из них были выше вас
 
 
 def _position_of(items: list[CompactItem], sspvo_id: str | None) -> int | None:
@@ -549,6 +667,16 @@ def diff_snapshots(old: HistoryEntry, new: HistoryEntry, sspvo_id: str | None) -
     new_pos = _position_of(new_items, sspvo_id)
     old_paid, old_app, old_agr = _totals(old_items)
     new_paid, new_app, new_agr = _totals(new_items)
+
+    new_ids = {i["id"] for i in new_items if i["id"]}
+    gone = [i for i in old_items if i["id"] and i["id"] not in new_ids]
+    withdrawn_ahead = None
+    if old_pos is not None:
+        withdrawn_ahead = sum(
+            1
+            for i in gone
+            if i["pos"] is not None and i["pos"] < old_pos and not i.get("q")
+        )
     return Delta(
         hours=_hours(new_t, old_t),
         d_total=len(new_items) - len(old_items),
@@ -558,4 +686,6 @@ def diff_snapshots(old: HistoryEntry, new: HistoryEntry, sspvo_id: str | None) -
         d_position=(new_pos - old_pos)
         if (old_pos is not None and new_pos is not None)
         else None,
+        withdrawn=len({i["id"] for i in gone}),
+        withdrawn_ahead=withdrawn_ahead,
     )

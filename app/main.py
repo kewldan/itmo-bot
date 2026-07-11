@@ -16,7 +16,9 @@ from aiogram.types import BotCommand
 if TYPE_CHECKING:
     from aiogram.fsm.storage.base import BaseStorage
 
+from app.backup import backup_loop
 from app.config import settings
+from app.cross import cross_loop
 from app.db import Database
 from app.handlers import routers
 from app.poller import poll_loop
@@ -25,6 +27,7 @@ COMMANDS = [
     BotCommand(command="track", description="Следить за конкурсным списком"),
     BotCommand(command="status", description="Детальный разбор и вероятность"),
     BotCommand(command="chart", description="Графики динамики"),
+    BotCommand(command="compare", description="Сравнить мои программы"),
     BotCommand(command="list", description="Мои подписки"),
     BotCommand(command="settings", description="Дайджест места: периодичность"),
     BotCommand(command="refresh", description="Обновить данные с сайта"),
@@ -70,10 +73,14 @@ async def main() -> None:
 
     await bot.set_my_commands(COMMANDS)
     poller = asyncio.create_task(poll_loop(bot, db))
+    backup = asyncio.create_task(backup_loop(bot, db))
+    cross = asyncio.create_task(cross_loop(db))
     try:
         await dispatcher.start_polling(bot)
     finally:
         poller.cancel()
+        backup.cancel()
+        cross.cancel()
         await db.close()
 
 

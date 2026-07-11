@@ -49,6 +49,19 @@ class Snapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class CrossList:
+    """Последний слепок чужой программы для кросс-анализа приоритетов."""
+
+    degree: str
+    financing: str
+    group_id: int
+    places: int
+    update_time: datetime
+    fetched_at: datetime
+    items: list[CompactItem]
+
+
+@dataclass(frozen=True, slots=True)
 class Subscription:
     """Подписка пользователя: программа + его код ЕПГУ.
 
@@ -64,3 +77,4 @@ class Subscription:
     notify: bool
     place_interval_hours: int
     place_notified_at: datetime | None
+    last_p_base: float | None  # для алертов о падении вероятности

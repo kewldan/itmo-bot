@@ -7,14 +7,16 @@ Telegram-бот мониторинга конкурсных списков abit.
 
 - Пакеты и окружение — только **uv** (`uv sync`, `uv run`, `uv add`).
   Никаких pip/poetry. Зависимости — в `pyproject.toml`, лок — `uv.lock`.
-- Линт — **ruff** с `select = ["ALL"]`. Запрещены: `# noqa`,
-  `per-file-ignores`, добавление правил в `ignore` (там только пара,
-  официально несовместимая с `ruff format`). Кириллица в текстах решается
-  через `allowed-confusables`, не отключением RUF001-003.
-- Типы — **ty**. Запрещён `# type: ignore`. Проверка:
-  `uv run ty check app` — ноль ошибок и предупреждений.
-- Перед завершением любой правки: `uv run ruff format app &&
-  uv run ruff check app && uv run ty check app`.
+- Линт — **ruff** с `select = ["ALL"]`. Запрещены: `# noqa`, добавление
+  правил в `ignore` (там только пара, официально несовместимая
+  с `ruff format`). Кириллица в текстах решается через
+  `allowed-confusables`, не отключением RUF001-003. Единственные
+  per-file-ignores — pytest-идиомы для `tests/**` (S101, PLR2004,
+  SLF001); на `app/` исключений нет.
+- Типы — **ty**. Запрещён `# type: ignore`.
+- Перед завершением любой правки: `uv run ruff format app tests &&
+  uv run ruff check app tests && uv run ty check app tests &&
+  uv run pytest -q`. CI (GitHub Actions) гоняет то же самое.
 
 ## Стек и архитектурные решения
 
@@ -33,9 +35,15 @@ Telegram-бот мониторинга конкурсных списков abit.
 - Графики — matplotlib + Agg (бэкенд через `MPLBACKEND` в `app/__init__.py`,
   не `matplotlib.use()`). Оси времени — `mdates.date2num` (стабы `Axes.plot`
   не принимают `list[datetime]`).
-- Поллер (`app/poller.py`) не должен умирать: цикл ловит сбои через
+- Поллер (`app/poller.py`) и кросс-обход (`app/cross.py`) не должны
+  умирать: циклы ловят сбои через
   `asyncio.gather(..., return_exceptions=True)`, а не `except Exception`
   (BLE001).
+- Фоновые задачи (поллер, кросс-обход, бэкап) стартуют в `main.py`
+  и отменяются в `finally`.
+- Кросс-анализ: слепки чужих программ хранятся по одному на программу
+  (`cross_lists`), эффективные приоритеты считаются на лету
+  в `app/cross.py::effective_priorities`.
 
 ## Проверка без Docker
 

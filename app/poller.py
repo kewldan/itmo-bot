@@ -14,10 +14,11 @@ from aiogram.exceptions import (
 )
 
 from app import texts
+from app.admin import notify_admin
 from app.config import settings
 from app.fetcher import FetchError, fetch_rating
 from app.metrics import diff_snapshots
-from app.service import build_analysis, window_delta
+from app.service import build_analysis, fetch_cross, fetch_lk, window_delta
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -31,6 +32,21 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 POLITE_PAUSE_SECONDS = 2.0
+# Пороги алертов: уведомляем при падении p_base ниже любого из них.
+ALERT_THRESHOLDS = (0.95, 0.90, 0.75, 0.50)
+# Алерт админу после стольких сбоев обновления программы подряд.
+FAIL_ALERT_AFTER = 3
+_fail_counts: dict[int, int] = {}
+
+
+def crossed_threshold(prev: float | None, cur: float) -> float | None:
+    """Наибольший порог, через который вероятность упала вниз."""
+    if prev is None:
+        return None
+    for threshold in ALERT_THRESHOLDS:
+        if prev >= threshold > cur:
+            return threshold
+    return None
 
 
 async def poll_once(bot: Bot, db: Database) -> None:
@@ -44,9 +60,29 @@ async def poll_once(bot: Bot, db: Database) -> None:
                 )
             except (FetchError, httpx.HTTPError) as exc:
                 log.warning("Не удалось обновить %s: %s", program.url, exc)
+                await _register_failure(bot, program, exc)
                 continue
+            await _register_success(bot, program)
             await _process_update(bot, db, rating)
             await asyncio.sleep(POLITE_PAUSE_SECONDS)
+
+
+async def _register_failure(bot: Bot, program: Program, exc: Exception) -> None:
+    """Считает сбои подряд; после FAIL_ALERT_AFTER — алерт админу."""
+    _fail_counts[program.id] = _fail_counts.get(program.id, 0) + 1
+    if _fail_counts[program.id] == FAIL_ALERT_AFTER:
+        await notify_admin(
+            bot,
+            f"⚠️ Программа «{program.title}» не обновляется "
+            f"({FAIL_ALERT_AFTER} сбоя подряд): {exc}\n{program.url}",
+        )
+
+
+async def _register_success(bot: Bot, program: Program) -> None:
+    """Сбрасывает счётчик сбоев; сообщает о восстановлении."""
+    if _fail_counts.get(program.id, 0) >= FAIL_ALERT_AFTER:
+        await notify_admin(bot, f"✅ Программа «{program.title}» снова обновляется.")
+    _fail_counts[program.id] = 0
 
 
 async def _process_update(bot: Bot, db: Database, rating: RatingData) -> None:
@@ -78,10 +114,23 @@ async def _notify_subscriber(
     history_pair: tuple[list[Snapshot], list[Snapshot]],
     sub: Subscription,
 ) -> None:
-    """Дайджест места (если пора) или уведомление об изменениях."""
+    """Алерт о падении вероятности, дайджест места или уведомление."""
     old_snaps, snaps = history_pair
     prev, latest = old_snaps[-1], snaps[-1]
-    analysis = build_analysis(snaps, program, sub.sspvo_id)
+    lk = await fetch_lk(db, program.id, latest.update_time)
+    cross = await fetch_cross(db, program, latest.update_time)
+    analysis = build_analysis(snaps, program, sub.sspvo_id, lk, cross)
+
+    if analysis.found and program.places > 0:
+        threshold = crossed_threshold(sub.last_p_base, analysis.p_base)
+        await db.update_last_p(sub.id, analysis.p_base)
+        if threshold is not None and sub.notify:
+            await _send(
+                bot,
+                db,
+                sub,
+                texts.format_threshold_alert(program.title, threshold, analysis),
+            )
 
     if analysis.found and _digest_due(sub, latest.update_time):
         window = window_delta(snaps, sub.sspvo_id, float(sub.place_interval_hours))
@@ -101,7 +150,7 @@ async def _notify_subscriber(
     )
     if not (delta.d_total or delta.d_paid or delta.d_approved or delta.d_position):
         return  # для этого пользователя ничего не изменилось
-    prev_analysis = build_analysis(old_snaps, program, sub.sspvo_id)
+    prev_analysis = build_analysis(old_snaps, program, sub.sspvo_id, lk, cross)
     text = texts.format_notification(
         program.title,
         analysis,

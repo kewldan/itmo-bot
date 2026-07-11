@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 import asyncpg
 
-from app.models import Program, Snapshot, Subscription
+from app.models import CrossList, Program, Snapshot, Subscription
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -61,6 +61,26 @@ ALTER TABLE subscriptions
     ADD COLUMN IF NOT EXISTS place_interval_hours INTEGER NOT NULL DEFAULT 6;
 ALTER TABLE subscriptions
     ADD COLUMN IF NOT EXISTS place_notified_at TIMESTAMPTZ;
+ALTER TABLE subscriptions
+    ADD COLUMN IF NOT EXISTS last_p_base DOUBLE PRECISION;
+
+CREATE TABLE IF NOT EXISTS lk_data (
+    program_id INTEGER PRIMARY KEY REFERENCES programs (id) ON DELETE CASCADE,
+    tg_id BIGINT NOT NULL,
+    uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    points JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cross_lists (
+    degree TEXT NOT NULL,
+    financing TEXT NOT NULL,
+    group_id INTEGER NOT NULL,
+    places INTEGER NOT NULL,
+    update_time TIMESTAMPTZ NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    items JSONB NOT NULL,
+    PRIMARY KEY (degree, financing, group_id)
+);
 """
 
 
@@ -103,6 +123,7 @@ def _subscription_from(record: asyncpg.Record, *, id_key: str = "id") -> Subscri
         notify=record["notify"],
         place_interval_hours=record["place_interval_hours"],
         place_notified_at=record["place_notified_at"],
+        last_p_base=record["last_p_base"],
     )
 
 
@@ -273,7 +294,7 @@ class Database:
             """
             SELECT
                 s.id AS sub_id, s.tg_id, s.program_id, s.sspvo_id, s.notify,
-                s.place_interval_hours, s.place_notified_at,
+                s.place_interval_hours, s.place_notified_at, s.last_p_base,
                 p.id, p.degree, p.financing, p.group_id, p.title, p.places,
                 p.last_update_time
             FROM subscriptions AS s
@@ -292,7 +313,7 @@ class Database:
         rows = await self.pool.fetch(
             """
             SELECT id, tg_id, program_id, sspvo_id, notify,
-                place_interval_hours, place_notified_at
+                place_interval_hours, place_notified_at, last_p_base
             FROM subscriptions
             WHERE program_id = $1
             """,
@@ -320,6 +341,89 @@ class Database:
             sub_id,
             at,
         )
+
+    async def update_last_p(self, sub_id: int, p_base: float) -> None:
+        """Сохраняет последнюю рассчитанную вероятность (для алертов)."""
+        await self.pool.execute(
+            "UPDATE subscriptions SET last_p_base = $2 WHERE id = $1",
+            sub_id,
+            p_base,
+        )
+
+    async def upsert_cross_list(self, rating: RatingData) -> None:
+        """Обновляет слепок программы для кросс-анализа (хранится последний)."""
+        await self.pool.execute(
+            """
+            INSERT INTO cross_lists
+                (degree, financing, group_id, places, update_time,
+                 fetched_at, items)
+            VALUES ($1, $2, $3, $4, $5, now(), $6)
+            ON CONFLICT (degree, financing, group_id)
+            DO UPDATE SET places = EXCLUDED.places,
+                update_time = EXCLUDED.update_time,
+                fetched_at = EXCLUDED.fetched_at,
+                items = EXCLUDED.items
+            """,
+            rating.degree,
+            rating.financing,
+            rating.group_id,
+            rating.places,
+            rating.update_time,
+            rating.items,
+        )
+
+    async def cross_lists(self, degree: str) -> list[CrossList]:
+        """Все слепки кросс-анализа для степени."""
+        rows = await self.pool.fetch(
+            """
+            SELECT degree, financing, group_id, places, update_time,
+                fetched_at, items
+            FROM cross_lists
+            WHERE degree = $1
+            """,
+            degree,
+        )
+        return [
+            CrossList(
+                degree=r["degree"],
+                financing=r["financing"],
+                group_id=r["group_id"],
+                places=r["places"],
+                update_time=r["update_time"],
+                fetched_at=r["fetched_at"],
+                items=cast("list[CompactItem]", r["items"]),
+            )
+            for r in rows
+        ]
+
+    async def upsert_lk_points(
+        self, program_id: int, tg_id: int, points: list[list[object]]
+    ) -> None:
+        """Сохраняет точки притока из выгрузки ЛК (последняя загрузка)."""
+        await self.pool.execute(
+            """
+            INSERT INTO lk_data (program_id, tg_id, uploaded_at, points)
+            VALUES ($1, $2, now(), $3)
+            ON CONFLICT (program_id)
+            DO UPDATE SET tg_id = EXCLUDED.tg_id,
+                uploaded_at = EXCLUDED.uploaded_at, points = EXCLUDED.points
+            """,
+            program_id,
+            tg_id,
+            points,
+        )
+
+    async def lk_points(
+        self, program_id: int
+    ) -> tuple[datetime, list[list[object]]] | None:
+        """Точки притока из ЛК: (когда загружены, [[iso-время, балл], ...])."""
+        record = await self.pool.fetchrow(
+            "SELECT uploaded_at, points FROM lk_data WHERE program_id = $1",
+            program_id,
+        )
+        if record is None:
+            return None
+        return record["uploaded_at"], cast("list[list[object]]", record["points"])
 
     async def toggle_notify(self, sub_id: int, tg_id: int) -> bool | None:
         """Переключает уведомления; None, если подписка не найдена."""

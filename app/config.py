@@ -19,8 +19,14 @@ class Settings(BaseSettings):
     bot_token: str = ""
     database_url: str = "postgresql://itmo:itmo@localhost:5432/itmo"
     redis_url: str | None = None
-    # Telegram ID администратора — уведомления о новых пользователях.
+    # Telegram ID администратора — уведомления о новых пользователях,
+    # сбоях парсинга и ежедневные бэкапы БД.
     admin_tg_id: int | None = None
+    # Час (МСК) ежедневного бэкапа БД в Telegram.
+    backup_hour: int = 4
+    # Кросс-программный анализ: обход всех списков степени раз в N часов.
+    cross_enabled: bool = True
+    cross_poll_hours: float = 3.0
     poll_interval_seconds: int = 600
     # Дата окончания приёма оплат по договорам — горизонт прогноза.
     enroll_deadline: date = date(2026, 8, 20)

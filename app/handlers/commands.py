@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     BufferedInputFile,
@@ -17,16 +17,27 @@ from aiogram.types import (
 )
 
 from app import texts
+from app.admin import notify_admin
 from app.charts import render_history
-from app.config import settings
+from app.config import MSK
 from app.fetcher import FetchError, fetch_rating
-from app.service import build_analysis, build_history_points, day_delta
+from app.service import (
+    build_analysis,
+    build_history_points,
+    day_delta,
+    fetch_cross,
+    fetch_lk,
+)
 
 if TYPE_CHECKING:
     from app.db import Database
     from app.models import Program, Subscription
 
 log = logging.getLogger(__name__)
+
+# Кэш PNG-графиков: (program_id, sspvo_id, update_time) -> bytes.
+_CHART_CACHE: dict[tuple[int, str, str], bytes] = {}
+_CHART_CACHE_LIMIT = 64
 
 router = Router()
 
@@ -40,7 +51,7 @@ def _interval_label(hours: int) -> str:
 
 async def _notify_admin_new_user(message: Message, db: Database) -> None:
     """Сообщает администратору о новом пользователе (если настроено)."""
-    if settings.admin_tg_id is None or message.bot is None:
+    if message.bot is None:
         return
     user = message.from_user
     name = user.full_name if user else "?"
@@ -51,10 +62,7 @@ async def _notify_admin_new_user(message: Message, db: Database) -> None:
         username=username,
         total=await db.count_users(),
     )
-    try:
-        await message.bot.send_message(settings.admin_tg_id, text)
-    except TelegramAPIError:
-        log.warning("Не удалось уведомить админа %s", settings.admin_tg_id)
+    await notify_admin(message.bot, text)
 
 
 @router.message(CommandStart())
@@ -90,7 +98,10 @@ async def cmd_status(message: Message, db: Database) -> None:
         if not snaps:
             await message.answer(texts.NO_DATA.format(title=program.title))
             continue
-        analysis = build_analysis(snaps, program, sub.sspvo_id)
+        now = datetime.now(tz=MSK)
+        lk = await fetch_lk(db, program.id, now)
+        cross = await fetch_cross(db, program, now)
+        analysis = build_analysis(snaps, program, sub.sspvo_id, lk, cross)
         delta = day_delta(snaps, sub.sspvo_id)
         await message.answer(
             texts.format_status(program.title, program.url, analysis, delta),
@@ -111,14 +122,45 @@ async def cmd_chart(message: Message, db: Database) -> None:
             await message.answer(texts.NO_DATA.format(title=program.title))
             continue
         wait = await message.answer(texts.CHART_WAIT)
-        points = build_history_points(snaps, program, sub.sspvo_id)
-        png = render_history(points, program.places, program.title)
+        key = (program.id, sub.sspvo_id, snaps[-1].update_time.isoformat())
+        png = _CHART_CACHE.get(key)
+        if png is None:
+            lk = await fetch_lk(db, program.id, datetime.now(tz=MSK))
+            points = build_history_points(snaps, program, sub.sspvo_id, lk)
+            png = render_history(points, program.places, program.title)
+            if len(_CHART_CACHE) >= _CHART_CACHE_LIMIT:
+                _CHART_CACHE.pop(next(iter(_CHART_CACHE)))
+            _CHART_CACHE[key] = png
         note = "" if len(snaps) > 1 else texts.CHART_SINGLE_NOTE
         await message.answer_photo(
             BufferedInputFile(png, filename="dynamics.png"),
             caption=f"{program.title}{note}",
         )
         await wait.delete()
+
+
+@router.message(Command("compare"))
+async def cmd_compare(message: Message, db: Database) -> None:
+    """Сводная таблица по всем подпискам."""
+    subs = await db.user_subscriptions(message.chat.id)
+    if not subs:
+        await message.answer(texts.NO_SUBS)
+        return
+    rows = []
+    for sub, program in subs:
+        snaps = await db.snapshots(program.id)
+        if not snaps:
+            continue
+        now = datetime.now(tz=MSK)
+        lk = await fetch_lk(db, program.id, now)
+        cross = await fetch_cross(db, program, now)
+        rows.append(
+            (program.title, build_analysis(snaps, program, sub.sspvo_id, lk, cross))
+        )
+    if not rows:
+        await message.answer(texts.NO_SUBS)
+        return
+    await message.answer(texts.format_compare(rows))
 
 
 @router.message(Command("refresh"))
