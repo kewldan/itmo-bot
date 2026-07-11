@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app import history2025
 from app.config import MSK, settings
 
 if TYPE_CHECKING:
@@ -195,6 +196,34 @@ def _status_dynamics(a: Analysis, day: Delta | None) -> list[str]:
     return lines
 
 
+def _status_history(title: str, a: Analysis) -> list[str]:
+    """Факты приёма 2025 по этому направлению (если известны)."""
+    hist = history2025.for_title(title)
+    if hist is None:
+        return []
+    if a.approximate:
+        lines = [
+            "",
+            f"📚 Итог 2025: БВИ {hist.bvi} + квоты {hist.quotas}, "
+            f"общий конкурс — {hist.budget_general} зачислено",
+        ]
+        if hist.budget_general == 0:
+            lines.append(
+                "<i>⚠️ В 2025 общий конкурс на бюджет не проводился — "
+                "все места заняли БВИ и квоты.</i>"
+            )
+        return lines
+    score_part = (
+        f", минимальный балл {hist.contract_min_score}"
+        if hist.contract_min_score is not None
+        else ""
+    )
+    return [
+        "",
+        f"📚 Итог 2025: на контракт зачислено {hist.contract} чел.{score_part}",
+    ]
+
+
 def format_status(title: str, url: str, a: Analysis, day: Delta | None) -> str:
     """Детальный разбор для /status."""
     lines = _status_header(title, url, a)
@@ -209,6 +238,7 @@ def format_status(title: str, url: str, a: Analysis, day: Delta | None) -> str:
         lines += ["", CONGRATS]
     lines += _status_personal(a)
     lines += _status_probability(a)
+    lines += _status_history(title, a)
     lines += _status_dynamics(a, day)
     return "\n".join(lines)
 
@@ -370,6 +400,15 @@ LK_ACCEPTED = (
     "из них выше вас ~{q_ahead:.0f}%.\n"
     "Эти данные будут использоваться в расчётах ближайшие 48 часов — "
     "смотрите /status."
+)
+
+ABOUT = (
+    "🤖 <b>О боте</b>\n\n"
+    "Неофициальный бот: к Университету ИТМО отношения не имеет, "
+    "все данные берутся из открытых конкурсных списков abit.itmo.ru. "
+    "Оценки вероятности — модельные, не гарантия.\n\n"
+    "Создатель: @kewldan\n"
+    "Исходный код: https://github.com/kewldan/itmo-bot"
 )
 
 ADMIN_NEW_USER = (

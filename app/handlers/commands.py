@@ -86,6 +86,12 @@ async def cmd_id(message: Message) -> None:
     await message.answer(texts.YOUR_ID.format(tg_id=message.chat.id))
 
 
+@router.message(Command("about"))
+async def cmd_about(message: Message) -> None:
+    """О боте: неофициальный, создатель, исходники."""
+    await message.answer(texts.ABOUT, disable_web_page_preview=True)
+
+
 @router.message(Command("status"))
 async def cmd_status(message: Message, db: Database) -> None:
     """Детальный разбор по каждой подписке."""

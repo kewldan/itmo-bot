@@ -32,6 +32,7 @@ COMMANDS = [
     BotCommand(command="settings", description="Дайджест места: периодичность"),
     BotCommand(command="refresh", description="Обновить данные с сайта"),
     BotCommand(command="help", description="Справка"),
+    BotCommand(command="about", description="О боте"),
     BotCommand(command="cancel", description="Отменить текущее действие"),
 ]
 
