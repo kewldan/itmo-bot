@@ -188,8 +188,12 @@ def _prob_admission(ps_ahead: list[float], places: int, mu_new: float) -> float:
         acc += pmf[j]
         cdf[j] = acc
     if mu_new <= _MU_EPSILON:
-        return cdf[places - 1]
-    return sum(pk * cdf[places - 1 - k] for k, pk in _poisson_terms(mu_new, places - 1))
+        return min(max(cdf[places - 1], 0.0), 1.0)
+    total = sum(
+        pk * cdf[places - 1 - k] for k, pk in _poisson_terms(mu_new, places - 1)
+    )
+    # суммы флоатов могут выйти за [0, 1] на машинный эпсилон
+    return min(max(total, 0.0), 1.0)
 
 
 # ── Калибровка по истории снапшотов ──────────────────────────────────────────

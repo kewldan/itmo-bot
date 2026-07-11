@@ -88,6 +88,12 @@ _STATE_RU: dict[str, str] = {
     "none": "договор/согласие не оформлены",
 }
 
+CONGRATS = (
+    "🎉 <b>Вы уже поступили: договор заключён и оплачен — "
+    "это гарантия зачисления. Поздравляем!</b>"
+)
+CONGRATS_SHORT = "🎉 Вы уже поступили — договор оплачен."
+
 
 def _status_personal(a: Analysis) -> list[str]:
     score_detail = ""
@@ -115,9 +121,14 @@ def _status_personal(a: Analysis) -> list[str]:
 
 def _status_probability(a: Analysis) -> list[str]:
     deadline = settings.enroll_deadline.strftime("%d.%m")
+    header = (
+        "<b>Справочно: шансы, если бы вы не заключали договор</b>"
+        if a.my_state == "paid"
+        else "<b>Вероятность поступления</b>"
+    )
     lines = [
         "",
-        "<b>Вероятность поступления</b>",
+        header,
         f" сейчас:  {_prob_bar(a.p_now)} <b>{pct(a.p_now)}</b>",
         f" прогноз к {deadline}:  {_prob_bar(a.p_base)} <b>{pct(a.p_base)}</b>",
         f" пессимистично: {pct(a.p_pess)} · оптимистично: {pct(a.p_opt)}",
@@ -172,6 +183,8 @@ def format_status(title: str, url: str, a: Analysis, day: Delta | None) -> str:
             "командой /list или дождитесь появления заявления в списке.",
         ]
         return "\n".join(lines)
+    if a.my_state == "paid":
+        lines += ["", CONGRATS]
     lines += _status_personal(a)
     lines += _status_probability(a)
     lines += _status_dynamics(a, day)
@@ -194,7 +207,10 @@ def format_notification(
         if d.d_position:
             pos_str += f" ({_signed(d.d_position, invert_good=True)})"
         lines.append(pos_str)
-        prob_str = f"Вероятность: <b>{pct(a.p_base)}</b>"
+        if a.my_state == "paid":
+            lines.append(CONGRATS_SHORT)
+        prob_label = "Шансы без договора" if a.my_state == "paid" else "Вероятность"
+        prob_str = f"{prob_label}: <b>{pct(a.p_base)}</b>"
         if prev_p_base is not None:
             diff_pp = (a.p_base - prev_p_base) * 100
             if abs(diff_pp) >= NOTIFY_PP_THRESHOLD:
@@ -216,14 +232,17 @@ def format_place_digest(
     if window is not None and window.d_position is not None:
         pos_line += f" (за ~{window.hours:.0f} ч: "
         pos_line += f"{_signed(window.d_position, invert_good=True)})"
+    prob_label = "Шансы без договора" if a.my_state == "paid" else "Вероятность"
     lines = [
         f"📍 <b>{title}</b> — дайджест места (раз в {hours} ч)",
         "",
         pos_line,
         f"Эффективная позиция: <b>~{a.eff_position:.0f}</b> из {a.places}",
-        f"Вероятность: сейчас <b>{pct(a.p_now)}</b> · "
+        f"{prob_label}: сейчас <b>{pct(a.p_now)}</b> · "
         f"к {deadline}: <b>{pct(a.p_base)}</b>",
     ]
+    if a.my_state == "paid":
+        lines.insert(2, CONGRATS_SHORT)
     if window is not None:
         lines.append(
             f"Заявлений: {a.total} ({_signed(window.d_total)}), "
