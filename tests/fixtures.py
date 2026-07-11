@@ -91,7 +91,7 @@ def item(
     ts: float | None = 250.0,
     **flags: bool,
 ) -> CompactItem:
-    """Компактная запись для тестов метрик; flags: agr/app/paid/q."""
+    """Компактная запись для тестов метрик; flags: agr/app/paid/q/bvi."""
     return CompactItem(
         id=code,
         pos=pos,
@@ -104,6 +104,7 @@ def item(
         app=flags.get("app", False),
         paid=flags.get("paid", False),
         q=flags.get("q", False),
+        bvi=flags.get("bvi", False),
     )
 
 

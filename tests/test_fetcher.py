@@ -44,8 +44,10 @@ def test_parse_budget_page_categories() -> None:
     assert len(items) == 4
     by_code = {i["id"]: i for i in items}
     assert by_code["201"].get("q") is False
+    assert by_code["201"].get("bvi") is True
     assert by_code["202"].get("q") is True
     assert by_code["203"].get("q") is False
+    assert by_code["203"].get("bvi") is False
     assert [i["pos"] for i in items] == [1, 2, 3, 4]
 
 

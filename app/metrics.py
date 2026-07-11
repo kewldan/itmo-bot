@@ -98,6 +98,8 @@ _MU_EPSILON = 1e-9
 # ни обнулять приор, ни раздувать его до крайностей.
 _ODDS_FACTOR_MIN = 0.2
 _ODDS_FACTOR_MAX = 5.0
+# БВИ с поданным согласием — фактически гарантированное зачисление.
+P_BVI_AGREEMENT = 0.97
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +169,7 @@ def prior_enroll(
     if state == "approved":
         return params.p_approved
     if state == "agreement":
-        return params.p_agreement
+        return P_BVI_AGREEMENT if item.get("bvi") else params.p_agreement
     prio = eff_prio if eff_prio is not None else item["prio"]
     if prio is None:
         return params.p_no_priority
@@ -401,13 +403,18 @@ def estimate_influx(history: list[HistoryEntry], my_score: float | None) -> Infl
 
 @dataclass(slots=True)
 class AheadBreakdown:
-    """Разбивка конкурентов выше вас по статусам."""
+    """Разбивка конкурентов выше вас по статусам.
+
+    bvi — сколько из них поступает без вступительных испытаний
+    (пересекается с остальными счётчиками).
+    """
 
     paid: int = 0
     approved: int = 0
     agreement: int = 0
     none: int = 0
     none_prio1: int = 0
+    bvi: int = 0
 
 
 @dataclass(slots=True)
@@ -450,6 +457,7 @@ class Analysis:
     influx_is_lk: bool = False  # приток посчитан по выгрузке ЛК
     cross_used: bool = False  # применён кросс-анализ программ
     cross_changed: int = 0  # у скольких конкурентов выше приоритет уточнён
+    my_bvi: bool = False  # пользователь поступает без вступительных испытаний
 
 
 def deadline_at(day: date) -> datetime:
@@ -467,6 +475,8 @@ def _totals(items: list[CompactItem]) -> tuple[int, int, int]:
 def _breakdown(ahead_items: list[CompactItem]) -> AheadBreakdown:
     b = AheadBreakdown()
     for item in ahead_items:
+        if item.get("bvi"):
+            b.bvi += 1
         state = _state_key(item)
         if state == "paid":
             b.paid += 1
@@ -489,6 +499,7 @@ def _fill_personal(a: Analysis, me: CompactItem, items: list[CompactItem]) -> No
     a.ia_score = me["ia"]
     a.priority = me["prio"]
     a.my_state = _state_key(me)
+    a.my_bvi = bool(me.get("bvi"))
     scored = [i["ts"] for i in items if i["ts"] is not None]
     my_ts = me["ts"]
     if my_ts is not None and scored:

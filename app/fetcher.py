@@ -81,7 +81,9 @@ class CompactItem(TypedDict):
 
     q — квотная категория (особая/отдельная/целевая): такие абитуриенты
     занимают квотные места и не считаются конкурентами общего конкурса.
-    В старых снапшотах ключ отсутствует — читать через .get().
+    bvi — поступает без вступительных испытаний (олимпиада): согласие
+    для него фактически равно зачислению.
+    В старых снапшотах ключи отсутствуют — читать через .get().
     """
 
     id: str
@@ -95,6 +97,7 @@ class CompactItem(TypedDict):
     app: bool
     paid: bool
     q: NotRequired[bool]
+    bvi: NotRequired[bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +153,9 @@ def _to_int(value: object) -> int | None:
     return int(value) if isinstance(value, int) else None
 
 
-def _compact(item: dict[str, object], *, quota: bool = False) -> CompactItem:
+def _compact(
+    item: dict[str, object], *, quota: bool = False, bvi: bool = False
+) -> CompactItem:
     return CompactItem(
         id=str(item.get("sspvo_id") or ""),
         pos=_to_int(item.get("position")),
@@ -163,6 +168,7 @@ def _compact(item: dict[str, object], *, quota: bool = False) -> CompactItem:
         app=bool(item.get("has_approved_contract")),
         paid=bool(item.get("has_paid_contract")),
         q=quota,
+        bvi=bvi,
     )
 
 
@@ -196,7 +202,7 @@ def _category_items(program_list: dict[str, object]) -> list[CompactItem]:
         part = program_list.get(key)
         if isinstance(part, list):
             raw = cast("list[dict[str, object]]", part)
-            items += [_compact(i) for i in raw]
+            items += [_compact(i, bvi=key == "without_entry_tests") for i in raw]
     for key in _QUOTA_CATEGORIES:
         part = program_list.get(key)
         if isinstance(part, list):

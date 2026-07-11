@@ -97,20 +97,35 @@ CONGRATS = (
     "это гарантия зачисления. Поздравляем!</b>"
 )
 CONGRATS_SHORT = "🎉 Вы уже поступили — договор оплачен."
+BVI_CONGRATS_AGR = (
+    "🏅 <b>У вас БВИ и согласие подано — зачисление фактически "
+    "гарантировано. Поздравляем!</b>"
+)
+BVI_CONGRATS_NO_AGR = (
+    "🏅 <b>У вас БВИ.</b> Осталось подать согласие на зачисление — "
+    "и место гарантировано."
+)
+BVI_SHORT = "🏅 БВИ + согласие — вы фактически зачислены."
 
 
 def _status_personal(a: Analysis) -> list[str]:
-    score_detail = ""
-    if a.exam_score is not None:
-        score_detail = f" ({a.exam_score:g} + ИД {a.ia_score or 0:g})"
+    if a.my_bvi:
+        score_line = "Право поступления: <b>БВИ</b> (олимпиада)"
+    else:
+        score_detail = ""
+        if a.exam_score is not None:
+            score_detail = f" ({a.exam_score:g} + ИД {a.ia_score or 0:g})"
+        score_line = (
+            f"Балл: <b>{a.score:g}</b>{score_detail} · "
+            f"выше {pct(a.percentile or 0)} списка"
+        )
     b = a.ahead
     ahead_total = b.paid + b.approved + b.agreement + b.none
     quota_note = " (квоты не в счёт)" if a.approximate else ""
-    return [
+    lines = [
         "",
         f"<b>Ваше место: {a.position} из {a.total}</b>",
-        f"Балл: <b>{a.score:g}</b>{score_detail} · "
-        f"выше {pct(a.percentile or 0)} списка",
+        score_line,
         f"Приоритет: {a.priority} · {_STATE_RU[a.my_state]}",
         "",
         f"<b>Выше вас: {ahead_total} конкурент(ов){quota_note}</b>",
@@ -118,10 +133,15 @@ def _status_personal(a: Analysis) -> list[str]:
         f" ├ договор одобрен: {b.approved}",
         f" ├ подали согласие: {b.agreement}",
         f" └ без договора: {b.none} (с приоритетом 1: {b.none_prio1})",
+    ]
+    if b.bvi:
+        lines.append(f"Из них БВИ (займут места первыми): {b.bvi}")
+    lines += [
         "",
         f"Ожидаемо реальных конкурентов выше: <b>{a.mu_ahead_now:.0f}</b>",
         f"Эффективная позиция: <b>~{a.eff_position:.0f}</b> из {a.places}",
     ]
+    return lines
 
 
 def _status_probability(a: Analysis) -> list[str]:
@@ -236,6 +256,11 @@ def format_status(title: str, url: str, a: Analysis, day: Delta | None) -> str:
         return "\n".join(lines)
     if a.my_state == "paid":
         lines += ["", CONGRATS]
+    elif a.my_bvi:
+        lines += [
+            "",
+            BVI_CONGRATS_AGR if a.my_state == "agreement" else BVI_CONGRATS_NO_AGR,
+        ]
     lines += _status_personal(a)
     lines += _status_probability(a)
     lines += _status_history(title, a)
@@ -266,6 +291,8 @@ def format_notification(
         lines.append(pos_str)
         if a.my_state == "paid":
             lines.append(CONGRATS_SHORT)
+        elif a.my_bvi and a.my_state == "agreement":
+            lines.append(BVI_SHORT)
         prob_label = "Шансы без договора" if a.my_state == "paid" else "Вероятность"
         prob_str = f"{prob_label}: <b>{pct(a.p_base)}</b>"
         if prev_p_base is not None:

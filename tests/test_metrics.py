@@ -118,6 +118,21 @@ def test_effective_priority_changes_prior() -> None:
     assert prior_enroll(paid, CONTRACT_PARAMS, eff_prio=3) == CONTRACT_PARAMS.p_paid
 
 
+def test_bvi_agreement_prior_and_flags() -> None:
+    """БВИ с согласием — почти гарантированный конкурент; флаги в анализе."""
+    bvi_agr = item(1, "10", agr=True, bvi=True)
+    plain_agr = item(2, "11", agr=True)
+    assert prior_enroll(bvi_agr, CONTRACT_PARAMS) > prior_enroll(
+        plain_agr, CONTRACT_PARAMS
+    )
+    me = item(3, "999", ts=200.0)
+    a = analyze([(T0, [bvi_agr, plain_agr, me])], "999", _ctx(financing="budget"))
+    assert a.ahead.bvi == 1
+    a_bvi = analyze([(T0, [bvi_agr, plain_agr, me])], "10", _ctx(financing="budget"))
+    assert a_bvi.my_bvi is True
+    assert a_bvi.my_state == "agreement"
+
+
 def test_safe_boundary_reported() -> None:
     """Безопасная граница ставится там, где P падает ниже 95%."""
     items = [item(i, str(i), agr=True) for i in range(1, 101)]
