@@ -20,7 +20,8 @@ services:
       POSTGRES_PASSWORD: itmo
       POSTGRES_DB: itmo
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # PostgreSQL 18: данные живут в /var/lib/postgresql (не .../data)
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U itmo -d itmo"]
       interval: 5s
