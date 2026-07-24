@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+
+import httpx
 import pytest
 
 from app.fetcher import (
     NoNextDataError,
+    RatingData,
     _parse_page,
     _places_for,
+    fetch_rating,
     parse_program_ref,
 )
-from tests.fixtures import DIRECTION, T0, budget_page, flat_page, raw_item
+from tests.fixtures import DIRECTION, T0, budget_page, flat_page, page_html, raw_item
 
 
 def test_parse_program_ref_variants() -> None:
@@ -49,6 +54,50 @@ def test_parse_budget_page_categories() -> None:
     assert by_code["203"].get("q") is False
     assert by_code["203"].get("bvi") is False
     assert [i["pos"] for i in items] == [1, 2, 3, 4]
+
+
+def _null_time_page() -> str:
+    """Страница с update_time: null — сайт так делает при полном списке."""
+    return page_html(
+        {"items": [raw_item(1, "101")], "direction": DIRECTION, "update_time": None}
+    )
+
+
+def _fetch_via(transport: httpx.MockTransport, financing: str) -> RatingData:
+    """Синхронно скачивает список через подменённый транспорт."""
+
+    async def _run() -> RatingData:
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await fetch_rating("bachelor", financing, 2340, client)
+
+    return asyncio.run(_run())
+
+
+def test_parse_page_null_update_time() -> None:
+    """update_time: null — не ошибка разбора, список читается."""
+    _, items, update_time = _parse_page(_null_time_page())
+    assert update_time is None
+    assert [i["id"] for i in items] == ["101"]
+
+
+def test_fetch_rating_estimates_null_update_time() -> None:
+    """При update_time: null подставляется время загрузки с пометкой."""
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(200, text=_null_time_page())
+    )
+    rating = _fetch_via(transport, "budget")
+    assert rating.time_estimated is True
+    assert rating.update_time.tzinfo is not None
+
+
+def test_fetch_rating_site_time_not_estimated() -> None:
+    """Обычная страница: время сайта, без пометки оценки."""
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(200, text=flat_page([raw_item(1, "101")]))
+    )
+    rating = _fetch_via(transport, "contract")
+    assert rating.time_estimated is False
+    assert rating.update_time == T0
 
 
 def test_parse_page_without_next_data() -> None:

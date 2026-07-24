@@ -17,7 +17,7 @@ from typing import NotRequired, TypedDict, cast
 
 import httpx
 
-from app.config import settings
+from app.config import MSK, settings
 
 BASE_URL = "https://abit.itmo.ru/rating/{degree}/{financing}/{group_id}"
 DIRECTIONS_URL = "https://abitlk.itmo.ru/api/v1/rating/directions?degree={degree}"
@@ -102,7 +102,12 @@ class CompactItem(TypedDict):
 
 @dataclass(frozen=True, slots=True)
 class RatingData:
-    """Разобранный конкурсный список."""
+    """Разобранный конкурсный список.
+
+    time_estimated — сайт отдал update_time: null (список при этом полный),
+    и вместо времени сайта подставлен момент загрузки. Такой слепок
+    сохраняется в БД только при изменении содержимого списка.
+    """
 
     degree: str
     financing: str
@@ -111,6 +116,7 @@ class RatingData:
     places: int
     update_time: datetime
     items: list[CompactItem]
+    time_estimated: bool = False
 
     @property
     def total(self) -> int:
@@ -213,7 +219,9 @@ def _category_items(program_list: dict[str, object]) -> list[CompactItem]:
     return items
 
 
-def _parse_page(html: str) -> tuple[dict[str, object], list[CompactItem], datetime]:
+def _parse_page(
+    html: str,
+) -> tuple[dict[str, object], list[CompactItem], datetime | None]:
     match = _NEXT_DATA_RE.search(html)
     if match is None:
         raise NoNextDataError
@@ -228,7 +236,12 @@ def _parse_page(html: str) -> tuple[dict[str, object], list[CompactItem], dateti
         else:
             items = _category_items(cast("dict[str, object]", program_list))
         items.sort(key=lambda i: (i["pos"] is None, i["pos"] or 0))
-        update_time = datetime.fromisoformat(str(program_list["update_time"]))
+        # Сайт периодически отдаёт update_time: null при полном списке —
+        # это не ошибка разбора, время подставит fetch_rating.
+        raw_time = program_list.get("update_time")
+        update_time = (
+            datetime.fromisoformat(raw_time) if isinstance(raw_time, str) else None
+        )
     except (KeyError, TypeError, ValueError) as exc:
         raise RatingParseError(str(exc)) from exc
     return direction, items, update_time
@@ -285,6 +298,7 @@ async def fetch_rating(
         group_id=group_id,
         title=title,
         places=_places_for(direction, financing),
-        update_time=update_time,
+        update_time=update_time if update_time is not None else datetime.now(tz=MSK),
         items=items,
+        time_estimated=update_time is None,
     )

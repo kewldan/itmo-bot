@@ -206,8 +206,31 @@ class Database:
 
     # ── снапшоты ─────────────────────────────────────────────────────────
 
+    async def _latest_items(self, program_id: int) -> list[CompactItem] | None:
+        """Содержимое последнего слепка программы; None, если слепков нет."""
+        record = await self.pool.fetchrow(
+            """
+            SELECT items
+            FROM snapshots
+            WHERE program_id = $1
+            ORDER BY update_time DESC
+            LIMIT 1
+            """,
+            program_id,
+        )
+        return cast("list[CompactItem]", record["items"]) if record else None
+
     async def insert_snapshot(self, program_id: int, rating: RatingData) -> bool:
-        """Сохраняет слепок; False, если update_time уже известен."""
+        """Сохраняет слепок; False, если ничего нового.
+
+        Обычно новизну определяет update_time сайта (UNIQUE-конфликт).
+        Если время оценено (сайт отдал update_time: null), слепок
+        сохраняется только при изменении содержимого списка.
+        """
+        if rating.time_estimated and rating.items == await self._latest_items(
+            program_id
+        ):
+            return False
         record = await self.pool.fetchrow(
             """
             INSERT INTO snapshots
